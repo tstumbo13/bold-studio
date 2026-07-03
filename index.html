@@ -1617,5 +1617,45 @@ if(typeof burn==="function"){
  window.burn=async function(take){await ensureTplFonts();if(document.fonts&&document.fonts.ready){try{await document.fonts.ready;}catch(_){}}return __origBurn(take);};
 }
 </script>
+
+<script>
+"use strict";
+/* ================================================================
+   QUICK RECORD — no script, straight to camera.
+   Captions still work: live draft from your voice + Whisper upgrade.
+   ================================================================ */
+const __origRenderHome=renderHome;
+window.renderHome=async function(){
+ await __origRenderHome();
+ if(!document.getElementById("quickRec")){
+  const hero=document.getElementById("newVideo");
+  if(hero){
+   const b=document.createElement("button");
+   b.className="btn big";b.id="quickRec";b.style.marginTop="12px";
+   b.innerHTML='<svg class="i"><use href="#ic-mic"/></svg>Quick record — no script, just talk';
+   hero.parentNode.insertBefore(b,hero.nextSibling);
+   b.onclick=startQuickRecord;
+  }
+ }
+};
+function startQuickRecord(){
+ wiz={script:{title:"Quick take · "+new Date().toLocaleDateString([],{month:"short",day:"numeric"})+" "+new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),body:""},
+  takeId:null,burnedBlob:null,burnedMime:""};
+ const t=document.getElementById("wizTitle");if(t)t.textContent="Quick record";
+ showScreen("scr-wizard");showStep(0);
+ openStudio();
+}
+/* freestyle polish: hide the empty prompter chrome and speed HUD when there's no script */
+const __origBuildPrompter=buildPrompter;
+window.buildPrompter=function(){
+ __origBuildPrompter();
+ const hasScript=!!(wiz.script.body&&wiz.script.body.trim());
+ const hud=document.getElementById("speedHud");if(hud)hud.style.display=hasScript?"flex":"none";
+ const pt=document.getElementById("ptext");
+ if(!hasScript&&pt)pt.innerHTML='<span style="opacity:.4;font-size:.7em;font-weight:600">No script — just talk. Captions are captured from your voice.</span>';
+};
+/* re-render home so the button appears immediately on load */
+renderHome();
+</script>
 </body>
 </html>
