@@ -1170,5 +1170,147 @@ $("#wipeTakes").onclick=async()=>{const ts=await allTakes();for(const t of ts)aw
 /* ---------- boot ---------- */
 renderHome();
 </script>
+
+<script>
+"use strict";
+/* ================================================================
+   WHISPER AI CAPTIONS — on-device word-accurate transcription
+   (transformers.js v4, pinned; runs in a module Web Worker)
+   ================================================================ */
+const WHISPER={worker:null,busy:false};
+function whisperModelInfo(){
+ const gpu=!!navigator.gpu;
+ return gpu
+  ?{model:"onnx-community/whisper-base.en",device:"webgpu",size:"~80 MB",label:"Whisper base · GPU accelerated"}
+  :{model:"onnx-community/whisper-tiny.en",device:"wasm",size:"~40 MB",label:"Whisper tiny · CPU"};
+}
+const WHISPER_WORKER_SRC=[
+ 'import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0";',
+ 'let loading=null;',
+ 'function load(model,device){',
+ ' if(!loading){',
+ '  const opts={progress_callback:(p)=>postMessage({type:"progress",data:{status:p.status||"",file:p.file||"",progress:p.progress||0}})};',
+ '  if(device==="webgpu")opts.device="webgpu";',
+ '  loading=pipeline("automatic-speech-recognition",model,opts);',
+ ' }',
+ ' return loading;',
+ '}',
+ 'self.onmessage=async(e)=>{',
+ ' const m=e.data;',
+ ' try{',
+ '  const asr=await load(m.model,m.device);',
+ '  postMessage({type:"progress",data:{status:"ready",file:"",progress:100}});',
+ '  const out=await asr(m.audio,{return_timestamps:"word",chunk_length_s:30,stride_length_s:5});',
+ '  postMessage({type:"result",data:{chunks:out.chunks||[],text:out.text||""}});',
+ ' }catch(err){postMessage({type:"error",error:String((err&&err.message)||err)});}',
+ '};'
+].join("\n");
+function getWhisperWorker(){
+ if(WHISPER.worker)return WHISPER.worker;
+ const blob=new Blob([WHISPER_WORKER_SRC],{type:"text/javascript"});
+ WHISPER.worker=new Worker(URL.createObjectURL(blob),{type:"module"});
+ return WHISPER.worker;
+}
+async function extractAudio16k(blob){
+ const ab=await blob.arrayBuffer();
+ const AC=window.AudioContext||window.webkitAudioContext;
+ const ac=new AC();
+ const buf=await new Promise((res,rej)=>{
+  const p=ac.decodeAudioData(ab,res,rej);
+  if(p&&p.then)p.then(res).catch(rej);
+ });
+ try{ac.close();}catch(_){}
+ const len=Math.max(1600,Math.ceil(buf.duration*16000));
+ const off=new OfflineAudioContext(1,len,16000);
+ const src=off.createBufferSource();src.buffer=buf;src.connect(off.destination);src.start();
+ const rendered=await off.startRendering();
+ return rendered.getChannelData(0).slice();
+}
+function whisperChunksToCues(chunks,dur){
+ const words=[];
+ (chunks||[]).forEach(c=>{
+  const w=(c.text||"").trim();if(!w)return;
+  let t=(c.timestamp&&c.timestamp[0]!=null)?c.timestamp[0]:null;
+  if(t==null)t=words.length?words[words.length-1].t+0.3:0;
+  words.push({w,t:Math.max(0,Math.min(t,dur||t))});
+ });
+ return buildCues(words,dur||((words.length?words[words.length-1].t:0)+2),"");
+}
+function whisperSupported(){
+ return !!(window.Worker&&window.OfflineAudioContext&&(window.AudioContext||window.webkitAudioContext));
+}
+function injectWhisperUI(){
+ if(document.getElementById("aiCapCard"))return;
+ const cueList=document.getElementById("cueList");if(!cueList)return;
+ const anchor=cueList.previousElementSibling; /* the Transcript h2 */
+ const sec=document.createElement("div");sec.id="aiCapCard";
+ sec.innerHTML='<h2>AI captions</h2><div class="card">'
+  +'<div class="row"><div class="grow"><b>Word-accurate transcription</b>'
+  +'<div class="muted" id="aiCapNote" style="margin-top:4px"></div></div>'
+  +'<button class="btn primary sm" id="aiCapBtn"><svg class="i"><use href="#ic-wand"/></svg><span id="aiCapBtnLbl">Transcribe</span></button></div>'
+  +'<div class="bar" id="aiCapBarWrap" style="display:none;margin-top:14px"><i id="aiCapBar"></i></div>'
+  +'<div class="tiny" id="aiCapStatus" style="margin-top:8px"></div></div>';
+ cueList.parentNode.insertBefore(sec,anchor);
+ const info=whisperModelInfo();
+ document.getElementById("aiCapNote").textContent=
+  "OpenAI Whisper running on this device ("+info.label+"). One-time "+info.size+" download, then it works offline. Replaces the live draft captions with word-perfect timing.";
+ document.getElementById("aiCapBtn").onclick=runWhisperOnCurrent;
+ if(!whisperSupported()){
+  document.getElementById("aiCapBtn").disabled=true;
+  document.getElementById("aiCapStatus").textContent="AI transcription isn't supported in this browser — live captions still work.";
+ }
+}
+async function runWhisperOnCurrent(){
+ if(!capCur||WHISPER.busy)return;
+ const info=whisperModelInfo();
+ const btn=document.getElementById("aiCapBtn"),bar=document.getElementById("aiCapBar"),
+       wrap=document.getElementById("aiCapBarWrap"),st=document.getElementById("aiCapStatus");
+ WHISPER.busy=true;btn.disabled=true;wrap.style.display="block";bar.style.width="4%";
+ st.textContent="Extracting audio…";
+ try{
+  const audio=await extractAudio16k(capCur.blob);
+  st.textContent="Loading Whisper (first time downloads the model)…";
+  const w=getWhisperWorker();
+  const result=await new Promise((res,rej)=>{
+   const to=setTimeout(()=>rej(new Error("timed out — try again")),420000);
+   w.onmessage=e=>{
+    const m=e.data;
+    if(m.type==="progress"){
+     if(m.data.status==="progress"&&m.data.progress)
+      {bar.style.width=Math.max(4,Math.round(m.data.progress))+"%";
+       st.textContent="Downloading model · "+Math.round(m.data.progress)+"%";}
+     else if(m.data.status==="ready"){bar.style.width="100%";st.textContent="Transcribing… (about as long as the clip on first runs)";}
+    }else if(m.type==="result"){clearTimeout(to);res(m.data);}
+    else if(m.type==="error"){clearTimeout(to);rej(new Error(m.error));}
+   };
+   w.onerror=ev=>{clearTimeout(to);rej(new Error(ev.message||"worker failed to start"));};
+   try{w.postMessage({audio,model:info.model,device:info.device},[audio.buffer]);}
+   catch(_){w.postMessage({audio,model:info.model,device:info.device});}
+  });
+  const cues=whisperChunksToCues(result.chunks,capCur.duration);
+  if(!cues.length)throw new Error("no speech detected in this take");
+  capCur.cues=cues;capCur.capSource="whisper";
+  await putTake(capCur);
+  renderCues();updateAiCapState();
+  toast("AI captions ready · "+cues.reduce((a,c)=>a+c.words.length,0)+" words, word-perfect timing");
+ }catch(e){
+  st.textContent="Didn't work: "+e.message+". Your existing captions are untouched — try again, or check your connection for the first-time model download.";
+ }
+ WHISPER.busy=false;btn.disabled=!whisperSupported();
+ wrap.style.display="none";bar.style.width="0%";
+}
+function updateAiCapState(){
+ const st=document.getElementById("aiCapStatus"),lbl=document.getElementById("aiCapBtnLbl");
+ if(!st||!lbl)return;
+ if(capCur&&capCur.capSource==="whisper"){st.textContent="✓ This take already has AI captions.";lbl.textContent="Re-transcribe";}
+ else if(whisperSupported()){st.textContent=capCur&&capCur.cues.length?"Current captions are the live draft — one tap upgrades them.":"";lbl.textContent="Transcribe";}
+}
+/* hook into the Style step without touching its code */
+const __origInitStyleStep=initStyleStep;
+window.initStyleStep=async function(){
+ await __origInitStyleStep();
+ injectWhisperUI();updateAiCapState();
+};
+</script>
 </body>
 </html>
