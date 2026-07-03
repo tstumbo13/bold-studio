@@ -224,6 +224,13 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;heigh
           <div style="flex:1;min-width:130px"><label class="f">Size</label><input type="range" id="capSize" min="3" max="9" step="0.5" value="5"></div>
           <div style="flex:1;min-width:130px"><label class="f">Position</label><input type="range" id="capPos" min="10" max="90" value="72"></div>
         </div>
+        <h2>Soundtrack</h2>
+        <div class="row" id="musicList"></div>
+        <div class="row" style="margin-top:10px">
+          <div style="flex:2;min-width:180px"><label class="f">Music volume: <span id="mvVal"></span></label><input type="range" id="musicVol" min="0" max="100" value="25"></div>
+          <label class="btn small" style="cursor:pointer">⬆ Use my own track<input type="file" id="musicFile" accept="audio/*" style="display:none"></label>
+        </div>
+        <div class="muted" style="margin-top:6px">Built-in tracks are original compositions made for this app — royalty-free on every platform. Music loops under your voice and is mixed into the burned export.</div>
         <h2>Transcript <span class="muted" style="font-weight:400">(fix any words — timing is kept)</span></h2>
         <div id="cueList"></div>
         <div class="row" style="margin-top:14px">
@@ -691,6 +698,39 @@ const PRESETS=[
 let capStyle=Object.assign({},PRESETS[0],{size:5,pos:72});
 let capTakes=[],capCur=null,capRAF=null;
 
+/* ---- soundtrack ---- */
+const MUSIC=[
+ {n:"🚫 None",f:null},
+ {n:"Rise · uplifting",f:"music_rise.mp3"},
+ {n:"Steady · calm",f:"music_steady.mp3"},
+ {n:"Drive · energetic",f:"music_drive.mp3"},
+ {n:"Hope · warm keys",f:"music_hope.mp3"},
+ {n:"Grit · determined",f:"music_grit.mp3"}
+];
+let music={src:null,name:"🚫 None",vol:0.25};
+const musicEl=new Audio();musicEl.loop=true;
+musicEl.onerror=()=>{if(music.src){toast("Track not available offline — use the hosted app or upload your own");music.src=null;music.name="🚫 None";renderMusicList();}};
+function renderMusicList(){
+ const ml=$("#musicList");if(!ml)return;ml.innerHTML="";
+ MUSIC.forEach(m=>{
+  const b=document.createElement("button");b.className="pill"+(music.name===m.n?" on":"");b.textContent=m.n;
+  b.onclick=()=>{selectMusic(m.n,m.f);};
+  ml.appendChild(b);
+ });
+ if(music.name==="🎵 Custom"){const b=document.createElement("button");b.className="pill on";b.textContent="🎵 Custom";ml.appendChild(b);}
+ const mv=$("#mvVal");if(mv)mv.textContent=Math.round(music.vol*100)+"%";
+}
+function selectMusic(name,src){
+ music.name=name;music.src=src;
+ musicEl.pause();
+ if(src){musicEl.src=src;musicEl.volume=music.vol;
+  const v=$("#capVideo");
+  if(v&&!v.paused){musicEl.currentTime=0;musicEl.play().catch(()=>{});}
+  toast(name+" selected");
+ }
+ renderMusicList();
+}
+
 async function renderCaptions(){
  capTakes=await allTakes();
  $("#capEmpty").style.display=capTakes.length?"none":"block";
@@ -704,11 +744,17 @@ async function renderCaptions(){
  const pr=$("#capPresets");pr.innerHTML="";
  PRESETS.forEach(p=>{const b=document.createElement("button");b.className="pill"+(capStyle.n===p.n?" on":"");b.textContent=p.n;
   b.onclick=()=>{capStyle=Object.assign({},p,{size:capStyle.size,pos:capStyle.pos});$("#capColor").value=p.color;$("#capHi").value=p.hi;renderCaptions();};pr.appendChild(b);});
+ renderMusicList();
 }
+$("#musicVol").oninput=e=>{music.vol=e.target.value/100;musicEl.volume=music.vol;$("#mvVal").textContent=Math.round(music.vol*100)+"%";};
+$("#musicFile").onchange=e=>{const f=e.target.files[0];if(!f)return;selectMusic("🎵 Custom",URL.createObjectURL(f));};
 function selCapTake(id){capCur=capTakes.find(t=>t.id===id);$("#capTake").value=id;loadCapTake();}
 $("#capTake").onchange=e=>selCapTake(e.target.value);
 function loadCapTake(){
  const v=$("#capVideo");v.src=URL.createObjectURL(capCur.blob);
+ v.onplay=()=>{if(music.src){musicEl.volume=music.vol;if(musicEl.duration)musicEl.currentTime=v.currentTime%musicEl.duration;musicEl.play().catch(()=>{});}};
+ v.onpause=()=>musicEl.pause();
+ v.onseeked=()=>{if(music.src&&musicEl.duration)musicEl.currentTime=v.currentTime%musicEl.duration;};
  renderCues();
  if(capRAF)cancelAnimationFrame(capRAF);
  const loop=()=>{drawOverlay(v.currentTime);capRAF=requestAnimationFrame(loop);};
@@ -777,6 +823,17 @@ async function burn(take){
  const src=ac.createMediaElementSource(v);
  const dest=ac.createMediaStreamDestination();
  src.connect(dest);
+ /* soundtrack mix */
+ let mEl=null;
+ if(music.src){
+  mEl=new Audio(music.src);mEl.loop=true;mEl.crossOrigin="anonymous";
+  await new Promise(res=>{mEl.oncanplaythrough=res;mEl.onerror=res;setTimeout(res,4000);});
+  try{
+   const mSrc=ac.createMediaElementSource(mEl);
+   const mGain=ac.createGain();mGain.gain.value=music.vol;
+   mSrc.connect(mGain);mGain.connect(dest);
+  }catch(_){mEl=null;}
+ }
  const vidStream=cv.captureStream(30);
  const mixed=new MediaStream([...vidStream.getVideoTracks(),...dest.stream.getAudioTracks()]);
  const mime=pickMime();
@@ -785,6 +842,7 @@ async function burn(take){
  const done=new Promise(res=>rec.onstop=res);
  rec.start(1000);
  await v.play();
+ if(mEl){mEl.currentTime=0;mEl.play().catch(()=>{});}
  const draw=()=>{
   if(burnAbort||v.ended){finish();return;}
   ctx.drawImage(v,0,0,W,H);
@@ -795,7 +853,7 @@ async function burn(take){
   else requestAnimationFrame(draw);
  };
  let finished=false;
- const finish=()=>{if(finished)return;finished=true;try{rec.stop();}catch(_){}};
+ const finish=()=>{if(finished)return;finished=true;if(mEl)try{mEl.pause();}catch(_){}try{rec.stop();}catch(_){}};
  v.onended=finish;
  draw();
  await done;
