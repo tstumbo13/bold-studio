@@ -1337,7 +1337,7 @@ async function ensureTplFonts(){
 const TPL=[
  {id:"prism",n:"Prism",fam:"Inter",w:600,upper:false,fill:"#ffffff",accent:"#ffffff",
   stroke:0,shadow:.06,ls:-0.02,dimAll:.45,kw:{mode:"none"},active:{mode:"solo"},
-  entrance:"fade",tilt:0},
+  entrance:"fade",tilt:0,reveal:"word",wordIn:.16},
  {id:"hormozi",n:"Hormozi",fam:"Anton",w:400,upper:true,fill:"#ffffff",accent:"#FFE600",
   stroke:.11,shadow:.16,kw:{mode:"cycle",colors:["#FFE600","#2CFF05","#FF2C2C"]},active:{mode:"color"},
   entrance:"pop",tilt:1.6},
@@ -1492,6 +1492,10 @@ drawOverlay=function(t){
   if(tpl.dim!=null&&i>activeIdx)s+="opacity:"+tpl.dim+";";
   if(tpl.dimAll!=null&&!isActive)s+="opacity:"+tpl.dimAll+";";
   if(isActive&&tpl.active.mode==="solo")s+="color:"+capStyle.color+";";
+  if(tpl.wordIn&&tpl.reveal==="word"){
+   const ap=Math.min(1,Math.max(0,(t-wd.t)/tpl.wordIn));
+   if(isActive)s+="opacity:"+ap+";display:inline-block;transform:translateY("+((1-ap)*8).toFixed(1)+"px) scale("+(0.96+0.04*ap).toFixed(3)+");";
+  }
   html+='<span style="'+s+'">'+w+"</span> ";
  });
  const cueKey=cue.t0+"_"+capStyle.tpl;
@@ -1568,6 +1572,11 @@ drawCueCanvas=function(ctx,cue,t,W,H){
    /* dim (karaoke future words / prism non-active) */
    if(tpl.dim!=null&&i>activeIdx)ctx.globalAlpha=ent.alpha*tpl.dim;
    if(tpl.dimAll!=null&&!isActive)ctx.globalAlpha=ent.alpha*tpl.dimAll;
+   if(tpl.wordIn&&tpl.reveal==="word"&&isActive){
+    const ap=Math.min(1,Math.max(0,(t-cue.words[i].t)/tpl.wordIn));
+    ctx.globalAlpha=ent.alpha*ap;
+    const asc=.96+.04*ap;ctx.scale(asc,asc);ctx.translate(0,(1-ap)*fs*.16);
+   }
    /* backgrounds */
    if(isKw&&tpl.kw.mode==="box"){
     ctx.fillStyle=tpl.kw.box||"#0b0b0e";const pad=fs*.14;
