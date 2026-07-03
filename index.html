@@ -1335,6 +1335,9 @@ async function ensureTplFonts(){
 
 /* ---- template definitions ---- */
 const TPL=[
+ {id:"prism",n:"Prism",fam:"Inter",w:600,upper:false,fill:"#ffffff",accent:"#ffffff",
+  stroke:0,shadow:.06,ls:-0.02,dimAll:.45,kw:{mode:"none"},active:{mode:"solo"},
+  entrance:"fade",tilt:0},
  {id:"hormozi",n:"Hormozi",fam:"Anton",w:400,upper:true,fill:"#ffffff",accent:"#FFE600",
   stroke:.11,shadow:.16,kw:{mode:"cycle",colors:["#FFE600","#2CFF05","#FF2C2C"]},active:{mode:"color"},
   entrance:"pop",tilt:1.6},
@@ -1367,7 +1370,7 @@ const TPL=[
   entrance:"fade",tilt:0}
 ];
 function curTpl(){return TPL.find(t=>t.id===capStyle.tpl)||TPL[0];}
-capStyle.tpl=localStorage.getItem("bs_tpl")||"hormozi";
+capStyle.tpl=localStorage.getItem("bs_tpl")||"prism";
 
 /* ---- keyword picker ---- */
 const STOPW=new Set("the,a,an,and,or,but,so,is,are,was,were,be,been,being,to,of,in,on,at,for,with,it,its,it's,this,that,these,those,you,your,yours,i,i'm,my,me,we,our,us,they,them,their,he,him,his,she,her,do,does,did,don't,doesn't,didn't,not,no,yes,have,has,had,as,by,from,if,into,just,than,then,when,what,who,whom,how,why,where,which,all,any,can,can't,could,will,would,should,shall,may,might,must,there,here,out,up,down,over,under,again,once,more,most,some,such,only,own,same,too,very,about,now,get,got,go,going,gonna,one,two,like,time,day,say,said,see,know,think,want,really,thing,things,way,make,made,us".split(","));
@@ -1416,7 +1419,8 @@ renderPresets=function(){
  TPL.forEach(tp=>{
   const d=document.createElement("div");d.className="preset"+(capStyle.tpl===tp.id?" on":"");
   const fam=tp.fam+(tp.fam.includes(" ")?"":"");
-  const kwSpan=tp.kw.mode==="box"
+  const kwSpan=tp.dimAll!=null?'<span style="opacity:'+tp.dimAll+'">word</span>'
+   :tp.kw.mode==="box"
    ?'<span style="background:#0b0b0e;color:#fff;padding:0 .18em;border-radius:.1em">word</span>'
    :tp.kw.mode==="script"?'<span style="font-family:Caveat;color:'+tp.accent+';font-size:1.25em">word</span>'
    :tp.kw.mode==="italic"||tp.kw.mode==="italicUpper"?'<span style="font-style:italic">'+(tp.kw.mode==="italicUpper"?"WORD":"word")+'</span>'
@@ -1486,6 +1490,8 @@ drawOverlay=function(t){
    else if(tpl.active.mode==="pill"||tpl.active.mode==="glidepill")s+="background:"+capStyle.hi+";color:#15100a;border-radius:.18em;padding:0 .18em;";
   }
   if(tpl.dim!=null&&i>activeIdx)s+="opacity:"+tpl.dim+";";
+  if(tpl.dimAll!=null&&!isActive)s+="opacity:"+tpl.dimAll+";";
+  if(isActive&&tpl.active.mode==="solo")s+="color:"+capStyle.color+";";
   html+='<span style="'+s+'">'+w+"</span> ";
  });
  const cueKey=cue.t0+"_"+capStyle.tpl;
@@ -1496,7 +1502,7 @@ drawOverlay=function(t){
   (tpl.shadow?"text-shadow:0 "+(fs*.06)+"px "+(fs*tpl.shadow)+"px rgba(0,0,0,.85);":"");
  const bgCss=tpl.bg==="glass"?"background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.3);border-radius:.4em;padding:.3em .55em;backdrop-filter:blur(6px);":"";
  o.innerHTML='<div style="display:inline-block;font-family:\''+tpl.fam+'\';font-weight:'+tpl.w+';font-size:'+fs+'px;color:'+capStyle.color
-  +';line-height:1.32;letter-spacing:'+((tpl.spacing||0))+'em;'+strokeCss+glowCss+bgCss
+  +';line-height:1.32;letter-spacing:'+((tpl.ls!=null?tpl.ls:(tpl.spacing||0)))+'em;'+strokeCss+glowCss+bgCss
   +'transform:rotate('+tilt+'deg);'
   +(cueKey!==__lastCueKey?'animation:'+anim+';':'')+'">'+html+"</div>";
  __lastCueKey=cueKey;
@@ -1558,8 +1564,10 @@ drawCueCanvas=function(ctx,cue,t,W,H){
    const scl=(isActive&&tpl.active.mode==="scale")?1.16:1;
    ctx.save();ctx.translate(wcx,y);ctx.scale(scl,scl);
    ctx.font=fontFor(i);
-   /* dim (karaoke future words) */
+   if(tpl.ls!=null&&"letterSpacing"in ctx)ctx.letterSpacing=(tpl.ls*fs)+"px";
+   /* dim (karaoke future words / prism non-active) */
    if(tpl.dim!=null&&i>activeIdx)ctx.globalAlpha=ent.alpha*tpl.dim;
+   if(tpl.dimAll!=null&&!isActive)ctx.globalAlpha=ent.alpha*tpl.dimAll;
    /* backgrounds */
    if(isKw&&tpl.kw.mode==="box"){
     ctx.fillStyle=tpl.kw.box||"#0b0b0e";const pad=fs*.14;
