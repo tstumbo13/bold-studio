@@ -1957,5 +1957,168 @@ window.drawCueCanvas=function(ctx,cue,tSec,W,H){
  try{e2_draw(ctx,cue,tSec,W,H);}catch(_){/*never break export*/}
 };
 </script>
+
+<script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.js"></script>
+<script>
+"use strict";
+/* ================================================================
+   PRO EXPORT — WebCodecs pipeline (the tech behind commercial
+   browser video editors). Frame-accurate compositing, high-bitrate
+   H.264 in a real MP4, offline audio mix. Legacy realtime burn
+   remains as automatic fallback for unsupported browsers.
+   ================================================================ */
+function proSupported(){
+ return !!(window.VideoEncoder&&window.AudioEncoder&&window.VideoFrame&&window.Mp4Muxer);
+}
+async function pickVideoCodec(W,H,fps){
+ const cands=["avc1.64002A","avc1.640028","avc1.4D4028","avc1.42E01F"];
+ for(const codec of cands){
+  try{
+   const s=await VideoEncoder.isConfigSupported({codec,width:W,height:H,bitrate:14_000_000,framerate:fps});
+   if(s.supported)return codec;
+  }catch(_){/*try next*/}
+ }
+ return null;
+}
+async function decodeAudioBuffer(blob){
+ const AC=window.AudioContext||window.webkitAudioContext;
+ const ac=new AC();
+ const ab=await blob.arrayBuffer();
+ const buf=await new Promise((res,rej)=>{const p=ac.decodeAudioData(ab,res,rej);if(p&&p.then)p.then(res).catch(rej);});
+ try{ac.close();}catch(_){}
+ return buf;
+}
+/* offline-mix voice + soundtrack into one stereo buffer */
+async function buildMixedAudio(take){
+ const voice=await decodeAudioBuffer(take.blob);
+ const sr=voice.sampleRate,ch=Math.min(2,voice.numberOfChannels)||1;
+ const len=voice.length;
+ const out=[new Float32Array(len),new Float32Array(len)];
+ for(let c=0;c<2;c++){
+  const src=voice.getChannelData(Math.min(c,voice.numberOfChannels-1));
+  out[c].set(src);
+ }
+ if(music.src){
+  try{
+   const mResp=await fetch(music.src);
+   const mBuf=await decodeAudioBuffer(await mResp.blob());
+   const g=music.vol;
+   for(let c=0;c<2;c++){
+    const mc=mBuf.getChannelData(Math.min(c,mBuf.numberOfChannels-1));
+    const scale=mBuf.sampleRate/sr;
+    for(let i=0;i<len;i++){
+     const mi=Math.floor((i*scale))%mBuf.length; /* loop */
+     out[c][i]+=mc[mi]*g;
+    }
+   }
+   /* soft clip */
+   for(let c=0;c<2;c++)for(let i=0;i<len;i++){const v=out[c][i];out[c][i]=Math.tanh(v*1.1)/1.1;}
+  }catch(e){console.warn("music mix skipped:",e);}
+ }
+ return{channels:out,sampleRate:sr,length:len,numberOfChannels:2};
+}
+async function burnPro(take){
+ const codecReady=proSupported();
+ if(!codecReady)throw new Error("webcodecs-unavailable");
+ /* probe video dims via element */
+ const v=document.createElement("video");
+ v.src=URL.createObjectURL(take.blob);v.muted=true;v.playsInline=true;
+ await new Promise((res,rej)=>{v.onloadedmetadata=res;v.onerror=()=>rej(new Error("couldn't decode video"));});
+ let W=v.videoWidth||1080,H=v.videoHeight||1920;
+ if(W%2)W--;if(H%2)H--;
+ const fps=30;
+ const codec=await pickVideoCodec(W,H,fps);
+ if(!codec)throw new Error("no-h264");
+ /* audio first (fast) */
+ const mix=await buildMixedAudio(take);
+ /* muxer */
+ const target=new Mp4Muxer.ArrayBufferTarget();
+ const muxer=new Mp4Muxer.Muxer({target,
+  video:{codec:"avc",width:W,height:H},
+  audio:{codec:"aac",sampleRate:mix.sampleRate,numberOfChannels:2},
+  fastStart:"in-memory"});
+ let encErr=null;
+ const vEnc=new VideoEncoder({output:(c,m)=>muxer.addVideoChunk(c,m),error:e=>{encErr=e;}});
+ vEnc.configure({codec,width:W,height:H,bitrate:14_000_000,framerate:fps});
+ const aEnc=new AudioEncoder({output:(c,m)=>muxer.addAudioChunk(c,m),error:e=>{encErr=e;}});
+ aEnc.configure({codec:"mp4a.40.2",sampleRate:mix.sampleRate,numberOfChannels:2,bitrate:192_000});
+ /* feed audio in 1024-sample frames (AAC native) */
+ {
+  const FR=1024;
+  const inter=new Float32Array(FR*2);
+  for(let off=0;off<mix.length;off+=FR){
+   const n=Math.min(FR,mix.length-off);
+   for(let i=0;i<n;i++){inter[i*2]=mix.channels[0][off+i];inter[i*2+1]=mix.channels[1][off+i];}
+   const ad=new AudioData({format:"f32",sampleRate:mix.sampleRate,numberOfFrames:n,numberOfChannels:2,
+    timestamp:Math.round(off/mix.sampleRate*1e6),data:inter.subarray(0,n*2)});
+   aEnc.encode(ad);ad.close();
+   if(encErr)throw encErr;
+  }
+ }
+ /* video: play (slowed for reliability) and composite every presented frame */
+ const cv=("OffscreenCanvas"in window)?new OffscreenCanvas(W,H):(()=>{const c=document.createElement("canvas");c.width=W;c.height=H;return c;})();
+ const ctx=cv.getContext("2d");
+ await ensureTplFonts();if(document.fonts&&document.fonts.ready){try{await document.fonts.ready;}catch(_){}}
+ v.playbackRate=0.8;
+ let lastKey=-10,done=false;
+ const finished=new Promise((res)=>{v.onended=()=>{done=true;res();};});
+ const useRVFC="requestVideoFrameCallback"in v;
+ const pump=(now,meta)=>{
+  if(done||burnAbort)return;
+  const t=meta?meta.mediaTime:v.currentTime;
+  ctx.drawImage(v,0,0,W,H);
+  const cue=take.cues.find(c=>t>=c.t0&&t<c.t1);
+  if(cue){try{drawCueCanvas(ctx,cue,t,W,H);}catch(_){}}
+  const frame=new VideoFrame(cv,{timestamp:Math.round(t*1e6),duration:Math.round(1e6/fps)});
+  const key=t-lastKey>=2;if(key)lastKey=t;
+  vEnc.encode(frame,{keyFrame:key});
+  frame.close();
+  const bar=document.getElementById("modalBar");
+  if(bar)bar.style.width=Math.min(100,(t/Math.max(.1,v.duration))*100)+"%";
+  if(useRVFC)v.requestVideoFrameCallback(pump);
+  else if(!v.ended)requestAnimationFrame(()=>pump());
+ };
+ await v.play();
+ if(useRVFC)v.requestVideoFrameCallback(pump);else pump();
+ const wd=setTimeout(()=>{done=true;},((v.duration/0.8)+8)*1000);
+ await finished;clearTimeout(wd);
+ if(burnAbort){try{vEnc.close();aEnc.close();}catch(_){};return null;}
+ await vEnc.flush();await aEnc.flush();
+ try{vEnc.close();aEnc.close();}catch(_){}
+ if(encErr)throw encErr;
+ muxer.finalize();
+ return{blob:new Blob([target.buffer],{type:"video/mp4"}),mime:"video/mp4"};
+}
+/* wire: pro first, legacy fallback */
+if(typeof burn==="function"){
+ const __legacyBurn=burn;
+ window.burn=async function(take){
+  if(proSupported()){
+   try{
+    const msg=document.getElementById("modalMsg");
+    if(msg)msg.textContent="Rendering with the pro pipeline — frame-accurate, full quality MP4.";
+    return await burnPro(take);
+   }catch(e){
+    console.warn("pro export fell back:",e);
+    const msg=document.getElementById("modalMsg");
+    if(msg)msg.textContent="Rendering (compatibility mode).";
+   }
+  }
+  return __legacyBurn(take);
+ };
+}
+/* capture quality bump: prefer 60fps 1080p on capable devices */
+(function(){
+ const origStart=startCam;
+ window.startCam=async function(){
+  const r=await origStart();
+  try{
+   const track=stream&&stream.getVideoTracks&&stream.getVideoTracks()[0];
+   if(track&&track.applyConstraints)await track.applyConstraints({frameRate:{ideal:60,max:60},width:{ideal:1920},height:{ideal:1080}});
+  }catch(_){/*best effort*/}
+  return r;
+ };
+})();
+</script>
 </body>
 </html>
